@@ -28,6 +28,9 @@ declare namespace Cloudflare {
     BYPASS_EMAIL_VERIFICATION?: string;
     TEAM_DOMAIN?: string;
     POLICY_AUD?: string;
+    // Client IDs (comma-separated) of the Cloudflare Access service tokens
+    // served as a workspace principal (cloudflare_access mode only).
+    ACCESS_SERVICE_TOKEN_CLIENT_IDS?: string;
     POSTHOG_PUBLIC_KEY?: string;
     POSTHOG_HOST?: string;
     BETTER_AUTH_SECRET?: string;

@@ -59,29 +59,52 @@ export const requireAllowedEmails = (remedy: string) =>
 
 const SERVICE_TOKEN_ID = /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 
+// A service token's Client ID: the CF-Access-Client-Id value, which is also
+// the `common_name` claim of the Access JWT the token mints (hex + ".access").
+const SERVICE_TOKEN_CLIENT_ID = /^[0-9a-f]+\.access$/i;
+
+// A comma-separated env list; empty when unset. Dies on the first entry that
+// fails `pattern`, naming its position and never its value — a mis-pasted
+// Client Secret must not land in the deploy log.
+const readTokenList = (name: string, pattern: RegExp, remedy: string) =>
+  Effect.gen(function* () {
+    const entries = (yield* Config.string(name).pipe(Config.withDefault("")))
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    const malformed = entries.findIndex((entry) => !pattern.test(entry));
+    if (malformed !== -1) {
+      return yield* Effect.die(
+        new Error(`${name} entry #${malformed + 1} ${remedy}`),
+      );
+    }
+    return entries;
+  });
+
 /**
  * Reads ACCESS_SERVICE_TOKEN_IDS: the Cloudflare Access service-token ids
- * (comma-separated) admitted without a login. Empty when unset. Dies on a
- * value that is not a token id, so a pasted Client ID or Client Secret never
- * reaches the Cloudflare API as policy configuration.
+ * admitted without a login. Dies on a value that is not a token id, so a
+ * pasted Client ID or Client Secret never reaches the Cloudflare API as
+ * policy configuration.
  */
-export const readServiceTokenIds = Effect.gen(function* () {
-  const ids = (yield* Config.string("ACCESS_SERVICE_TOKEN_IDS").pipe(
-    Config.withDefault(""),
-  ))
-    .split(",")
-    .map((id) => id.trim())
-    .filter(Boolean);
-  const malformed = ids.find((id) => !SERVICE_TOKEN_ID.test(id));
-  if (malformed !== undefined) {
-    return yield* Effect.die(
-      new Error(
-        `ACCESS_SERVICE_TOKEN_IDS entry "${malformed}" is not a service-token id — use the token's ID (a UUID, shown under Zero Trust → Access → Service auth), not its Client ID or Client Secret.`,
-      ),
-    );
-  }
-  return ids;
-});
+export const readServiceTokenIds = readTokenList(
+  "ACCESS_SERVICE_TOKEN_IDS",
+  SERVICE_TOKEN_ID,
+  "is not a service-token id — use the token's ID (a UUID, shown under Zero Trust → Access → Service auth), not its Client ID or Client Secret.",
+);
+
+/**
+ * Reads ACCESS_SERVICE_TOKEN_CLIENT_IDS: the Client IDs of the service tokens
+ * the app itself serves as a workspace principal
+ * (src/middleware/ensure-user/cloudflareAccess.ts). Deliberately a separate
+ * list from ACCESS_SERVICE_TOKEN_IDS: passing Access does not by itself grant
+ * the workspace.
+ */
+export const readServiceTokenClientIds = readTokenList(
+  "ACCESS_SERVICE_TOKEN_CLIENT_IDS",
+  SERVICE_TOKEN_CLIENT_ID,
+  "is not a service-token Client ID — use the CF-Access-Client-Id value (it ends in .access), not the token's ID or Client Secret.",
+);
 
 /**
  * The gate itself: an email allow-policy on a self-hosted Access application.

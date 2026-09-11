@@ -11,6 +11,7 @@ import { z } from "zod";
 import {
   emailAccessGate,
   HOSTED_PROD_STAGE,
+  readServiceTokenClientIds,
   readServiceTokenIds,
   readWorkersSubdomain,
   requireAllowedEmails,
@@ -472,6 +473,11 @@ export default Alchemy.Stack(
         BETTER_AUTH_URL: authUrl,
         TEAM_DOMAIN: access.teamDomain,
         POLICY_AUD: access.policyAud,
+        // Access service tokens the app serves as a workspace principal
+        // (src/middleware/ensure-user/cloudflareAccess.ts); independent of
+        // who manages the Access application.
+        ACCESS_SERVICE_TOKEN_CLIENT_IDS:
+          (yield* readServiceTokenClientIds).join(","),
 
         // Prod-only: pooled Postgres via the existing Hyperdrive config.
         ...(prodHyperdrive ? { HYPERDRIVE: prodHyperdrive } : {}),

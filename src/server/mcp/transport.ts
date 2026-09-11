@@ -21,6 +21,8 @@ import {
 import { getPublicOrigin } from "@/server/mcp/public-origin";
 import { createOpenSeoMcpServer } from "@/server/mcp/server";
 import { AuthRepository } from "@/server/auth/repositories/AuthRepository";
+import { asAppError, toClientError } from "@/server/lib/errors";
+import { statusForAppError } from "@/server/lib/http-errors";
 
 // Mirrors the agents SDK's DEFAULT_CORS_OPTIONS so legacy responses carry the
 // same CORS surface as the modern handler's.
@@ -208,6 +210,41 @@ export async function handleAuthenticatedOpenSeoMcpRequest(
   ])(request, env, ctx);
 }
 
+const SELF_HOSTED_AUTH_FAILURE_CODES: ReadonlySet<string> = new Set([
+  "UNAUTHENTICATED",
+  "AUTH_CONFIG_MISSING",
+]);
+
+// Resolves the self-hosted caller. An auth failure (a refused Access token,
+// missing Access config) answers as a JSON-RPC error with the AppError's HTTP
+// status instead of escaping as an uncaught Worker exception (HTTP 500,
+// error code 1101).
+async function resolveSelfHostedIdentity(
+  request: Request,
+  authMode: "cloudflare_access" | "local_noauth",
+) {
+  try {
+    return authMode === "local_noauth"
+      ? await resolveLocalNoAuthContext()
+      : await resolveCloudflareAccessContext(request.headers);
+  } catch (error) {
+    const appError = asAppError(error);
+    if (!appError || !SELF_HOSTED_AUTH_FAILURE_CODES.has(appError.code)) {
+      throw error;
+    }
+    return withMcpCors(
+      Response.json(
+        {
+          jsonrpc: "2.0",
+          error: { code: -32000, message: toClientError(appError).message },
+          id: null,
+        },
+        { status: statusForAppError(appError.code) },
+      ),
+    );
+  }
+}
+
 export async function handleSelfHostedOpenSeoMcpRequest(
   request: Request,
   authMode: "cloudflare_access" | "local_noauth",
@@ -219,10 +256,10 @@ export async function handleSelfHostedOpenSeoMcpRequest(
     return new Response(null, { headers: MCP_CORS_HEADERS });
   }
 
-  const identity =
-    authMode === "local_noauth"
-      ? await resolveLocalNoAuthContext()
-      : await resolveCloudflareAccessContext(request.headers);
+  const identity = await resolveSelfHostedIdentity(request, authMode);
+  if (identity instanceof Response) {
+    return identity;
+  }
   const props = createWorkersOAuthMcpProps({
     userId: identity.userId,
     userEmail: identity.userEmail,
