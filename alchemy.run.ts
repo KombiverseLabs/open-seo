@@ -11,6 +11,7 @@ import { z } from "zod";
 import {
   emailAccessGate,
   HOSTED_PROD_STAGE,
+  readServiceTokenIds,
   readWorkersSubdomain,
   requireAllowedEmails,
   workerName,
@@ -244,6 +245,7 @@ const resolveSelfHostAccess = (
       const allowedEmails = yield* requireAllowedEmails(
         "Set ACCESS_ALLOWED_EMAILS to the comma-separated emails allowed through Cloudflare Access — or set TEAM_DOMAIN and POLICY_AUD to manage the Access application yourself.",
       );
+      const serviceTokenIds = yield* readServiceTokenIds;
       const application = yield* emailAccessGate({
         policyId: "SelfHostAllowUsers",
         applicationId: "SelfHostAccess",
@@ -251,6 +253,14 @@ const resolveSelfHostAccess = (
         applicationName: `open-seo ${stage}`,
         domain: `${workerName(stage)}.${subdomain}`,
         emails: allowedEmails,
+        // Machine callers (an MCP gateway) present an Access service token
+        // instead of signing in; ACCESS_SERVICE_TOKEN_IDS names which ones.
+        // Unset → only the email policy exists, as before.
+        serviceTokens: {
+          policyId: "SelfHostAllowServiceTokens",
+          policyName: `open-seo ${stage} self-host service tokens`,
+          tokenIds: serviceTokenIds,
+        },
       });
       policyAud = application.aud;
     }

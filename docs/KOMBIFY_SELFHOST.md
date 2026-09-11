@@ -1,75 +1,59 @@
-# Kombify OpenSEO self-host (pre-Go scaffold)
+# Kombify OpenSEO self-host
 
-Eng-facing note for the KombiverseLabs fork of [every-app/open-seo](https://github.com/every-app/open-seo). This is a **pre-Go scaffold only**: no Wrangler/Alchemy deploy, no Live-DNS, no secret values in this repo.
+Eng-facing note for the KombiverseLabs fork of [every-app/open-seo](https://github.com/every-app/open-seo). No secret values in this repo.
 
-After Go, Eng deploys from this note. k2 writes Doppler; Eng is read-only.
+## Deployed state
 
-## Placement
+Deployed 2026-09-04 with `pnpm deploy:selfhost --yes` (Alchemy stack `open-seo`, stage `selfhost`): Workers `open-seo-selfhost` and `open-seo-selfhost-audit`, D1 `open-seo-db-selfhost`, served at `https://open-seo-selfhost.soulcreek.workers.dev`. Prereqs, `pnpm alchemy login` with `access:write`, bootstrap, and `.env.selfhost` follow upstream [docs/SELF_HOSTING_CLOUDFLARE.md](./SELF_HOSTING_CLOUDFLARE.md).
 
-Cloudflare Sidecar via Alchemy. After Go, deploy with:
+Cloudflare Access application `open-seo selfhost` gates the hostname with two policies, both provisioned by `alchemy.run.ts` from `.env.selfhost` (dashboard edits are overwritten on the next deploy):
 
-```bash
-pnpm deploy:selfhost --yes
-```
+1. Allow — the emails in `ACCESS_ALLOWED_EMAILS` (interactive sign-in).
+2. Service Auth (`non_identity`) — the service-token ids in `ACCESS_SERVICE_TOKEN_IDS`; today the kombify Gateway's token `kombify-gateway-openseo` (expires 2027-09-11).
 
-Follow upstream [docs/SELF_HOSTING_CLOUDFLARE.md](./SELF_HOSTING_CLOUDFLARE.md) (prereqs, `pnpm alchemy login` with `access:write`, bootstrap, `.env.selfhost`). Day-two MCP/telemetry: [docs/SELF_HOSTING_CLOUDFLARE_OPERATIONS.md](./SELF_HOSTING_CLOUDFLARE_OPERATIONS.md).
+The service-token policy live today was attached by hand through the API on 2026-09-11. The next `pnpm deploy:selfhost` replaces it with the alchemy-managed one, so `ACCESS_SERVICE_TOKEN_IDS` must be set in `.env.selfhost` before that deploy or the Gateway loses access.
 
 ## DNS hold
 
-**HOLD Live-DNS** until a named Cut from k2 / Marcel.
+**HOLD Live-DNS** until a named Cut from k2 / Marcel. Until then: `workers.dev` + Cloudflare Access only — no custom hostname, no Live-DNS change.
 
-Until that Cut: `workers.dev` + Cloudflare Access only. Do not attach a custom hostname or change Live-DNS.
+## Secrets
 
-## Secrets (Doppler)
+Do not put values in git, chat, or this file. k2 writes Doppler; Eng is read-only.
 
-k2 writes. Eng is read-only. Do not put values in git, chat, or this file.
+Gateway side — Doppler project `kombify-io`, config `prd_gateway`:
 
-Doppler project: `<DOPPLER_PROJECT>` (TBD — do not invent)
-Doppler config: `<DOPPLER_CONFIG>` (TBD — do not invent)
+| Name                                       | Purpose                                                                               |
+| ------------------------------------------ | ------------------------------------------------------------------------------------- |
+| `MCP_BACKEND_OPENSEO_ORIGIN`               | The self-host origin (`https://open-seo-selfhost.soulcreek.workers.dev`).             |
+| `MCP_BACKEND_OPENSEO_BEARER`               | An OpenSEO API key (`oseo_…`) the owner creates in the app under Settings → API keys. |
+| `MCP_BACKEND_OPENSEO_ACCESS_CLIENT_ID`     | Client ID of the Access service token `kombify-gateway-openseo`.                      |
+| `MCP_BACKEND_OPENSEO_ACCESS_CLIENT_SECRET` | Its Client Secret (shown once, at creation).                                          |
 
-Required:
+Self-host side — `.env.selfhost` on the deploying machine only (gitignored; template: `.env.selfhost.example`):
 
-| Secret | Purpose |
-| --- | --- |
-| `DATAFORSEO_API_KEY` | DataForSEO Base64 `email:password`. See [docs/DATAFORSEO_API_KEY.md](./DATAFORSEO_API_KEY.md). |
-| `ACCESS_ALLOWED_EMAILS` | Comma-separated emails allowed through Cloudflare Access. |
+| Name                         | Purpose                                                                                        |
+| ---------------------------- | ---------------------------------------------------------------------------------------------- |
+| `DATAFORSEO_API_KEY`         | DataForSEO Base64 `email:password`. See [docs/DATAFORSEO_API_KEY.md](./DATAFORSEO_API_KEY.md). |
+| `ACCESS_ALLOWED_EMAILS`      | Comma-separated emails allowed to sign in through Cloudflare Access.                           |
+| `ACCESS_SERVICE_TOKEN_IDS`   | Comma-separated Access service-token ids admitted without a login (token ids, not secrets).    |
+| `OPENSEO_TELEMETRY_DISABLED` | Set to `1` to opt out of anonymized OpenSEO telemetry.                                         |
 
-Optional:
+## Gateway → `/mcp`
 
-| Secret | Purpose |
-| --- | --- |
-| `OPENSEO_TELEMETRY_DISABLED` | Set to `1` to opt out of anonymized OpenSEO telemetry. |
+The kombify Gateway calls `https://open-seo-selfhost.soulcreek.workers.dev/mcp` with the service-token headers (`CF-Access-Client-Id`, `CF-Access-Client-Secret`) plus `Authorization: Bearer oseo_…`. The API-key path is the supported one. Verified 2026-09-11: `GET /api/health` with the service-token headers returns 200 from OpenSEO.
 
-## Post-deploy (after Go)
+Known: a POST to `/mcp` behind the service token but without an API key currently answers HTTP 500 `error code: 1101` (Worker exception) — not a usable path. The Managed OAuth flow in [docs/SELF_HOSTING_CLOUDFLARE_OPERATIONS.md](./SELF_HOSTING_CLOUDFLARE_OPERATIONS.md) serves interactive MCP clients, not the Gateway.
 
-Enable Zero Trust Access **Managed OAuth** so MCP clients can register. MCP URL:
+## Upstream sync
 
-```text
-https://<worker>/mcp
-```
+Track a pinned upstream tag. Upstream is at `v0.1.7`; `main` carries upstream `main` (`3632f40`, just past that tag) plus the fork commits. To move: fetch the new tag from upstream, merge it into `main`, then redeploy with `pnpm deploy:selfhost --yes`.
 
-Steps: [docs/SELF_HOSTING_CLOUDFLARE_OPERATIONS.md](./SELF_HOSTING_CLOUDFLARE_OPERATIONS.md).
+## Product holds
 
-## First-slice product holds
-
-These stay out of the first Sidecar slice:
+Out of the first Sidecar slice:
 
 - HITL SEO is **never-auto**. Publish stays with CMO.
 - No Auto-Publish.
 - No Deep-Desk-Embed.
 - Supply-Dock / SEO-Agent-Type come later.
-
-## Go blockers
-
-Do not deploy until all of these are true:
-
-1. DataForSEO key exists in Doppler (`DATAFORSEO_API_KEY`).
-2. Access allow-list exists in Doppler (`ACCESS_ALLOWED_EMAILS`).
-3. Cloudflare R2 has a payment method on file (required even on the free tier).
-4. Alchemy login has `access:write` (`pnpm alchemy login` — customize OAuth scopes; use `pnpm alchemy login --configure` if a prior login omitted it).
-
-## Out of scope for this note
-
-- No `wrangler deploy`, no `pnpm deploy:selfhost` until Go.
-- No Live-DNS / custom domain until the named Cut.
-- No secret values, and no invented Doppler project/config names.
