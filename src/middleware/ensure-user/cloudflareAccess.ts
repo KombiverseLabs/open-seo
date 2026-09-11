@@ -36,6 +36,42 @@ function getValidatedTeamDomain(teamDomain: string) {
   return result.origin;
 }
 
+// A service-token login (an Access `non_identity` policy) carries no user:
+// `sub` is an empty string, there is no `email`, and `common_name` is the
+// token's Client ID (the CF-Access-Client-Id header value) — see
+// https://developers.cloudflare.com/cloudflare-one/identity/authorization-cookie/application-token/
+// Passing the Access policy is not enough on its own: only Client IDs listed
+// in ACCESS_SERVICE_TOKEN_CLIENT_IDS get the workspace, so a token admitted
+// for, say, an uptime probe of /api/health stays out of the app.
+const SERVICE_TOKEN_USER_ID_PREFIX = "access-service-token:";
+// The reserved .invalid TLD: the address can never route mail.
+const SERVICE_TOKEN_EMAIL_DOMAIN = "access-service-token.invalid";
+
+function resolveServiceTokenPrincipal(payload: JWTPayload) {
+  const clientId = payload.common_name;
+  if (payload.sub !== "" || typeof clientId !== "string" || !clientId) {
+    return null;
+  }
+
+  const allowedClientIds = (env.ACCESS_SERVICE_TOKEN_CLIENT_IDS ?? "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+  if (!allowedClientIds.includes(clientId)) {
+    // Operator signal: the token passed Access but is not allowlisted here.
+    console.warn(
+      `Cloudflare Access service token ${clientId} is not listed in ACCESS_SERVICE_TOKEN_CLIENT_IDS; refusing it.`,
+    );
+    return null;
+  }
+
+  // One stable user per token, so what it creates survives redeploys.
+  return {
+    userId: `${SERVICE_TOKEN_USER_ID_PREFIX}${clientId}`,
+    userEmail: `${clientId}@${SERVICE_TOKEN_EMAIL_DOMAIN}`,
+  };
+}
+
 export async function resolveCloudflareAccessContext(
   headers: Headers,
 ): Promise<EnsuredUserContext> {
@@ -90,9 +126,17 @@ export async function resolveCloudflareAccessContext(
   const userId = typeof payload.sub === "string" ? payload.sub : null;
   const userEmail = typeof payload.email === "string" ? payload.email : null;
 
-  if (!userId || !userEmail) {
-    throw new AppError("UNAUTHENTICATED");
+  if (userId && userEmail) {
+    return resolveSharedWorkspaceContext(userId, userEmail);
   }
 
-  return resolveSharedWorkspaceContext(userId, userEmail);
+  const serviceToken = resolveServiceTokenPrincipal(payload);
+  if (serviceToken) {
+    return resolveSharedWorkspaceContext(
+      serviceToken.userId,
+      serviceToken.userEmail,
+    );
+  }
+
+  throw new AppError("UNAUTHENTICATED");
 }

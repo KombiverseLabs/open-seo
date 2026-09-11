@@ -1,6 +1,6 @@
 import { AppError } from "@/server/lib/errors";
 
-function statusForAppError(code: string): number {
+export function statusForAppError(code: string): number {
   switch (code) {
     case "UNAUTHENTICATED":
       return 401;
