@@ -1,10 +1,10 @@
 // The contract shared by the two email-gated Cloudflare Access boundaries —
 // the persistent preview wildcard (alchemy.preview-access.run.ts) and the
 // per-stage self-host gate (alchemy.run.ts). Worker naming, the
-// WORKERS_SUBDOMAIN shape, the allowed-emails parsing, and the
-// policy/application shape define who gets through which hostnames; keep them
-// in one place so the two gates cannot drift. The one copy that can't import
-// this module is the shell in .github/workflows/pr-preview.yml — its
+// WORKERS_SUBDOMAIN shape, the allowed-emails and service-token parsing, and
+// the policy/application shape define who gets through which hostnames; keep
+// them in one place so the two gates cannot drift. The one copy that can't
+// import this module is the shell in .github/workflows/pr-preview.yml — its
 // `open-seo-<stage>` naming stays comment-synced (and is backstopped by the
 // workflow's Access verify step).
 
@@ -57,7 +57,38 @@ export const requireAllowedEmails = (remedy: string) =>
     return emails;
   });
 
-/** The gate itself: an email allow-policy on a self-hosted Access application. */
+const SERVICE_TOKEN_ID = /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+
+/**
+ * Reads ACCESS_SERVICE_TOKEN_IDS: the Cloudflare Access service-token ids
+ * (comma-separated) admitted without a login. Empty when unset. Dies on a
+ * value that is not a token id, so a pasted Client ID or Client Secret never
+ * reaches the Cloudflare API as policy configuration.
+ */
+export const readServiceTokenIds = Effect.gen(function* () {
+  const ids = (yield* Config.string("ACCESS_SERVICE_TOKEN_IDS").pipe(
+    Config.withDefault(""),
+  ))
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+  const malformed = ids.find((id) => !SERVICE_TOKEN_ID.test(id));
+  if (malformed !== undefined) {
+    return yield* Effect.die(
+      new Error(
+        `ACCESS_SERVICE_TOKEN_IDS entry "${malformed}" is not a service-token id — use the token's ID (a UUID, shown under Zero Trust → Access → Service auth), not its Client ID or Client Secret.`,
+      ),
+    );
+  }
+  return ids;
+});
+
+/**
+ * The gate itself: an email allow-policy on a self-hosted Access application.
+ * With service-token ids, a second `non_identity` policy admits those tokens
+ * without a login (machine callers such as an MCP gateway). Policy order is
+ * precedence order; the email policy stays first.
+ */
 export const emailAccessGate = (options: {
   policyId: string;
   applicationId: string;
@@ -65,6 +96,7 @@ export const emailAccessGate = (options: {
   applicationName: string;
   domain: string;
   emails: string[];
+  serviceTokens?: { policyId: string; policyName: string; tokenIds: string[] };
 }) =>
   Effect.gen(function* () {
     const allow = yield* Cloudflare.Access.Policy(options.policyId, {
@@ -72,10 +104,22 @@ export const emailAccessGate = (options: {
       decision: "allow",
       include: options.emails.map((email) => ({ email: { email } })),
     });
+    const serviceTokens =
+      options.serviceTokens && options.serviceTokens.tokenIds.length > 0
+        ? yield* Cloudflare.Access.Policy(options.serviceTokens.policyId, {
+            name: options.serviceTokens.policyName,
+            decision: "non_identity",
+            include: options.serviceTokens.tokenIds.map((tokenId) => ({
+              serviceToken: { tokenId },
+            })),
+          })
+        : undefined;
     return yield* Cloudflare.Access.Application(options.applicationId, {
       type: "self_hosted",
       name: options.applicationName,
       domain: options.domain,
-      policies: [allow.policyId],
+      policies: serviceTokens
+        ? [allow.policyId, serviceTokens.policyId]
+        : [allow.policyId],
     });
   });
